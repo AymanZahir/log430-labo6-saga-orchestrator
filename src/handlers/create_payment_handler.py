@@ -3,6 +3,7 @@ Handler: create payment transaction
 SPDX - License - Identifier: LGPL - 3.0 - or -later
 Auteurs : Gabriel C. Ullmann, Fabio Petrillo, 2025
 """
+import config
 import requests
 from logger import Logger
 from handlers.handler import Handler
@@ -16,27 +17,40 @@ class CreatePaymentHandler(Handler):
         self.order_id = order_id
         self.order_data = order_data
         self.total_amount = 0
+        self.payment_id = 0
         super().__init__()
 
     def run(self):
         """Call payment microservice to generate payment transaction"""
         try:
-            # TODO: effectuer une requête à /orders pour obtenir le total_amount de la commande (que sera utilisé pour démander la transaction de paiement)
-            """
-            GET my-api-gateway-address/order/{id} ...
-            """
+            order_response = requests.get(
+                f"{config.API_GATEWAY_URL}/store-manager-api/orders/{self.order_id}"
+            )
+            if not order_response.ok:
+                error_payload = self._safe_json(order_response)
+                self.logger.error(f"Erreur {order_response.status_code} lors de la récupération de la commande : {error_payload}")
+                return OrderSagaState.INCREASING_STOCK
 
-            # TODO: effectuer une requête à /payments pour créer une transaction de paiement
-            """
-            POST my-api-gateway-address/payments ...
-            json={ voir collection Postman pour en savoir plus ... }
-            """
-            response_ok = True
-            if response_ok:
+            order_payload = order_response.json() or {}
+            self.total_amount = self._parse_total_amount(order_payload.get("total_amount"))
+
+            payment_response = requests.post(
+                f"{config.API_GATEWAY_URL}/payments-api/payments",
+                json={
+                    "user_id": self.order_data.get("user_id"),
+                    "order_id": self.order_id,
+                    "total_amount": self.total_amount
+                },
+                headers={'Content-Type': 'application/json'}
+            )
+            if payment_response.ok:
+                payment_payload = self._safe_json(payment_response) or {}
+                self.payment_id = payment_payload.get("payment_id", 0) if isinstance(payment_payload, dict) else 0
                 self.logger.debug("La création d'une transaction de paiement a réussi")
                 return OrderSagaState.COMPLETED
             else:
-                self.logger.error(f"Erreur : {response_ok}")
+                error_payload = self._safe_json(payment_response)
+                self.logger.error(f"Erreur {payment_response.status_code} : {error_payload}")
                 return OrderSagaState.INCREASING_STOCK
 
         except Exception as e:
@@ -48,3 +62,17 @@ class CreatePaymentHandler(Handler):
         # ATTENTION: Nous pourrions utiliser cette méthode si nous avions des étapes supplémentaires, mais ce n'est pas le cas actuellement, elle restera donc INUTILISÉE.
         self.logger.debug("La suppression d'une transaction de paiement a réussi")
         return OrderSagaState.INCREASING_STOCK
+
+    @staticmethod
+    def _safe_json(response):
+        try:
+            return response.json()
+        except Exception:
+            return response.text
+
+    @staticmethod
+    def _parse_total_amount(total):
+        try:
+            return float(total)
+        except (TypeError, ValueError):
+            return 0.0
